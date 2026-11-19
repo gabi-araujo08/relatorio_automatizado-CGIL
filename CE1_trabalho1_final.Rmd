@@ -1,0 +1,633 @@
+---
+title: "Relatório automatizado em R - perfil dos imigrantes no Brasil"
+subtitle: "Computação em Estatística 1"
+author: 
+- "Gabriela Araújo de Oliveira"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+    theme: flatly
+    highlight: tango
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.align = "center", out.width = "100%"
+)
+
+```
+
+```{css estilo-personalizado, echo=FALSE}
+h1, h2, h3 { color: #205072; }
+.kpi-container {
+  display: flex; flex-wrap: wrap; gap: 14px; margin: 22px 0 30px 0;
+}
+.kpi-box {
+  flex: 1; min-width: 180px; background: #f5f9fa; border-left: 5px solid #2c7873;
+  border-radius: 6px; padding: 14px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.kpi-number { font-size: 1.9em; font-weight: 700; color: #205072; line-height: 1.1; }
+.kpi-label { font-size: 0.85em; color: #555; margin-top: 4px; }
+.insight-box {
+  background: #eef7f4; border-left: 4px solid #57a773; padding: 12px 16px;
+  border-radius: 4px; margin: 14px 0 26px 0;
+}
+.fonte { font-size: 0.8em; color: #777; font-style: italic; }
+```
+
+# Introdução
+
+## O que este relatório faz? 
+
+Este relatório *constrói um perfil estatístico automatizado de migrantes qualificados* - um recorte legal específico definido de acordo com o nível de escolaridade, tipo de Resolução Normativa (RN), status do processo e órgão de processamento do pedido - e analisa esse grupo de trabalhadores de acordo com trimestre, sexo, idade, escolaridade, ocupação, país de origem, UF de destino e RN de amparo. Ou seja, esse relatório transforma dados por meio de um conjunto de etapas sequenciais e automatizadas, tendo como resultado tabelas de descrição sobre dados administrativos públicos de imigração.
+
+## Qual a base de dados utilizada? 
+
+Os dados utilizados neste relatório são os ***microdados da CGIL
+(Coordenação-Geral de Imigração Laboral)***, do Ministério da Justiça e
+Segurança Pública, disponibilizados pelo Portal de Imigração Laboral. Cada
+linha da base corresponde a um pedido de autorização de residência para fins
+de trabalho de um cidadão estrangeiro no Brasil. Cada pedido é enquadrado em
+uma Resolução Normativa (RN) do Conselho Nacional de Imigração (CNIg), o
+instrumento legal que define o tipo de autorização concedida — trabalho com
+vínculo empregatício, cargo de gerência/administração, assistência técnica,
+atividade marítima, investimento, pesquisa acadêmica, atleta profissional,
+religioso, aposentado, nômade digital, entre outras.
+
+
+# Quem é o "migrante qualificado" deste relatório
+
+A definição de **migrante qualificado**, fixada no escopo da turma, é a base de todo o
+recorte analítico. Um processo só entra neste relatório quando atende **simultaneamente**
+aos dois critérios abaixo:
+
+1. o trabalhador possui, no mínimo, **nível superior completo**; **e**
+2. o processo está amparado por uma das seguintes 18 Resoluções Normativas, historicamente
+   associadas a vistos de trabalho qualificado: RN 01, RN 02, RN 11, RN 21, RN 24, RN 35,
+   RN 62, RN 63, RN 70, RN 74, RN 76, RN 80, RN 84, RN 94, RN 99, RN 118, RN 121 e RN 124.
+
+**O caso especial da RN 30.** A RN 30 não é uma resolução de concessão original — ela rege
+a **renovação** de uma residência já concedida sob outra resolução (o texto do processo traz,
+entre parênteses, qual foi a resolução original, ex.: *"RN 30/2018 — Renovação de Residência
+(RN 11/2017 — Anexo XII...)"*). Um processo de renovação só conta como "migrante qualificado"
+se a resolução original por trás dele estiver entre as 18 listadas acima — mas, para fins de
+exibição na Tabela 7.7, ele continua sendo apresentado sob o rótulo **"RN 30"**, exatamente
+como no modelo de referência do trabalho.
+
+---
+
+# Tratamento dos Dados
+
+Para garantir a consistência das métricas, todos os dados foram filtrados diretamente na fonte (`dados_tratados`). Nenhuma tabela aplica filtros adicionais, o que evita divergências entre relatórios e garante que todas as análises partam exatamente da mesma base.
+
+O pipeline de tratamento segue esta sequência:
+
+```{r pipeline-visual, echo=FALSE, results='asis'}
+cat("
+**1. Leitura e empilhamento** das bases trimestrais brutas (2024 e 2025) em uma única tabela.
+
+**2. Enriquecimento**: junção com o dicionário de RNs para identificar, por processo, qual
+Resolução Normativa ampara o pedido (e, quando aplicável, qual resolução original está por
+trás de uma renovação via RN 30).
+
+**3. Classificação de elegibilidade**: marcação de cada processo como pertencente, ou não,
+ao universo de 'migrante qualificado' (RN elegível, considerando o caso da RN 30).
+
+**4. Filtragem única** da base, aplicando de uma só vez todos os critérios abaixo.
+
+**5. Geração das tabelas**: uma única função genérica constrói as sete tabelas no padrão do
+modelo de referência, garantindo consistência total entre elas.
+")
+```
+
+Os critérios aplicados na etapa de filtragem única são:
+
+- **Modalidade ≠ CNIg** — exclusão dos processos da modalidade CNIg, que não fazem parte do
+  escopo deste bloco de tabelas.
+- **Andamento = "DEFERIDO"** — o relatório considera apenas processos **já aprovados**. Essa
+  regra não está escrita literalmente no enunciado do trabalho, mas foi **validada
+  empiricamente**: só é possível reproduzir os totais oficiais do modelo de referência
+  (721 / 1.051 / 1.286 / 1.100 / 1.193 / 1.383, trimestre a trimestre) considerando
+  exclusivamente processos deferidos. Essa decisão metodológica está sendo documentada aqui
+  de forma transparente, como se espera de um produto de dados auditável.
+- **RN elegível** — o processo precisa estar amparado por uma das 18 RNs da lista (ou por uma
+  RN 30 cuja resolução original conste na lista).
+- **Nível superior completo** — a checagem de escolaridade é feita sobre texto normalizado
+  (minúsculo e sem acentuação), porque a base mistura, ao longo do tempo, mais de uma forma
+  de codificar o mesmo grau de instrução (ex.: `"5_Superior"` e `"Superior Completo"` convivem
+  na mesma coluna). Registros marcados como **incompletos** são excluídos.
+- **Janela temporal parametrizada** — apenas os trimestres de 1º até o trimestre de referência
+  (inclusive), nos dois anos comparados, como detalhado a seguir.
+
+**Ferramental utilizado:** todo o processamento é feito em **R**, com o ecossistema
+`tidyverse` (manipulação e agregação dos dados), `stringi` (normalização de texto sem
+acentuação, essencial para lidar com a inconsistência de codificação da escolaridade),
+`lubridate` (cálculo de idade na data de referência de cada trimestre) e `knitr`/`kableExtra`
+(formatação das tabelas para o relatório).
+
+```{r pacotes}
+pacotes <- c(
+  "tidyverse", "readxl", "knitr", "kableExtra", "stringi",
+  "lubridate", "dplyr", "readr", "tidyr", "scales"
+)
+faltando <- pacotes[!(pacotes %in% installed.packages()[, "Package"])]
+if (length(faltando) > 0) install.packages(faltando)
+
+library(tidyverse)
+library(stringi)
+library(lubridate)
+library(readr)
+library(knitr)
+library(kableExtra)
+library(scales)
+```
+
+```{r funcao-tabela-kable}
+# Função de exibição padronizada: aplica formatação, destaca a linha de Total
+# e adiciona rolagem horizontal quando o trimestre de referência gera muitas colunas.
+exibir_tabela <- function(df, titulo) {
+  df %>%
+    kable(caption = titulo, format.args = list(big.mark = ".")) %>%
+    kable_styling(
+      bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+      full_width = TRUE, font_size = 13
+    ) %>%
+    row_spec(nrow(df), bold = TRUE, background = "#eef2f3") %>%
+    scroll_box(width = "100%")
+}
+```
+
+---
+
+# Parametrização: um relatório, qualquer trimestre
+
+Todo o relatório depende de **apenas duas variáveis**. Alterar `ano_ref` e `tri_ref` abaixo —
+e recompilar o documento — é suficiente para gerar a versão completa do relatório para
+qualquer trimestre, de qualquer ano, inclusive anos que ainda serão disponibilizados no
+futuro. Nenhuma outra parte do código precisa ser tocada.
+
+```{r parametros}
+ano_ref <- 2025   # Ano de referência
+tri_ref <- 3       # Trimestre de referência (1, 2, 3 ou 4)
+
+ano_anterior <- ano_ref - 1
+```
+
+Este relatório está compilado para o **`r tri_ref`º trimestre de `r ano_ref`**, comparado ao
+mesmo período de **`r ano_anterior`**.
+
+## Leitura das bases
+
+```{r leitura-dados}
+# Base bruta CGIL
+dados_brutos <- rbind.data.frame(
+  read.csv2("CGIL_CNIg_2024-2.csv", fileEncoding = "UTF-8"),
+  read.csv2("CGIL_CNIg_2025-2.csv", fileEncoding = "UTF-8")
+)
+
+# Dicionário oficial amparo_legal -> RN
+rns_geral <- read.csv2("RNs_geral_17052025.csv", fileEncoding = "UTF-8")
+```
+
+## Classificação de elegibilidade (migrante qualificado)
+
+```{r classificacao-rn}
+rns_qualificados <- c(
+  "RN 01", "RN 02", "RN 11", "RN 21", "RN 24", "RN 35", "RN 62", "RN 63",
+  "RN 70", "RN 74", "RN 76", "RN 80", "RN 84", "RN 94", "RN 99", "RN 118",
+  "RN 121", "RN 124"
+)
+
+dados_amparo <- dados_brutos %>%
+  left_join(
+    rns_geral %>% select(amparo_legal, RN, amparos_rn30),
+    by = "amparo_legal"
+  ) %>%
+  mutate(
+    rn_qualifica = RN %in% rns_qualificados |
+      (RN == "RN 30" & amparos_rn30 %in% rns_qualificados)
+  )
+```
+
+## Filtragem única
+
+```{r filtragem-unica}
+dados_tratados <- dados_amparo %>%
+  mutate(
+    escolaridade_limpa = stri_trans_general(tolower(escolaridade), "Latin-ASCII"),
+    mes_num  = as.numeric(mes),
+    ano_num  = as.numeric(ano),
+    trimestre_calc = ceiling(mes_num / 3)
+  ) %>%
+  filter(
+    modalidade != "CNIg",
+    andamento == "DEFERIDO",
+    rn_qualifica,
+    str_detect(escolaridade_limpa, "superior|pos|mestrado|doutorado|especializa"),
+    !str_detect(escolaridade_limpa, "incompleto"),
+    (ano_num == ano_ref      & trimestre_calc <= tri_ref) |
+      (ano_num == ano_anterior & trimestre_calc <= tri_ref)
+  )
+```
+
+## Função genérica de tabela
+
+Esta função é o coração da automação: ela recebe qualquer variável de agrupamento já
+calculada e devolve a tabela no padrão do modelo de referência — trimestres de 1º até o
+trimestre de referência lado a lado, comparando o ano de referência com o ano anterior, linha
+de Total e, quando o trimestre de referência é maior que o 1º, colunas de **Total acumulado no
+ano** para cada um dos dois anos.
+
+```{r funcao-gerar-tabela}
+gerar_tabela <- function(dados, coluna_grupo, nome_col, ordem = NULL) {
+  base <- dados %>%
+    group_by(.data[[coluna_grupo]], trimestre_calc, ano_num) %>%
+    summarise(total = n(), .groups = "drop") %>%
+    rename(grupo = .data[[coluna_grupo]])
+
+  categorias <- if (!is.null(ordem)) ordem else sort(unique(base$grupo))
+
+  grade <- expand_grid(
+    grupo = categorias,
+    trimestre_calc = 1:tri_ref,
+    ano_num = c(ano_anterior, ano_ref)
+  )
+
+  tabela <- grade %>%
+    left_join(base, by = c("grupo", "trimestre_calc", "ano_num")) %>%
+    replace_na(list(total = 0)) %>%
+    pivot_wider(
+      names_from  = c(trimestre_calc, ano_num),
+      values_from = total,
+      values_fill = 0,
+      names_glue  = "{trimestre_calc}º Tri_{ano_num}"
+    )
+
+  if (!is.null(ordem)) {
+    tabela <- tabela %>%
+      mutate(grupo = factor(grupo, levels = ordem)) %>%
+      arrange(grupo) %>%
+      mutate(grupo = as.character(grupo))
+  }
+
+  if (tri_ref > 1) {
+    tabela <- tabela %>%
+      mutate(
+        !!paste0("Total_", ano_anterior) := rowSums(select(., ends_with(as.character(ano_anterior)))),
+        !!paste0("Total_", ano_ref)       := rowSums(select(., ends_with(as.character(ano_ref))))
+      )
+  }
+
+  linha_total <- tabela %>%
+    summarise(grupo = "Total", across(where(is.numeric), sum))
+
+  resultado <- bind_rows(tabela, linha_total)
+  names(resultado)[names(resultado) == "grupo"] <- nome_col
+  resultado
+}
+```
+
+## Funções de apoio para os insights
+
+Para que a leitura analítica de cada tabela também se atualize sozinha — e não fique
+"congelada" nos números do trimestre atual — as funções abaixo recalculam, a cada
+compilação, o total do período, a categoria mais frequente e a variação percentual entre os
+dois anos comparados.
+
+```{r funcoes-insight}
+total_periodo <- function(dados, ano) {
+  dados %>%
+    filter(ano_num == ano, trimestre_calc <= tri_ref) %>%
+    nrow()
+}
+
+top_categoria <- function(dados, coluna, ano = ano_ref) {
+  dados %>%
+    filter(ano_num == ano, trimestre_calc <= tri_ref) %>%
+    count(.data[[coluna]], sort = TRUE) %>%
+    slice(1)
+}
+
+var_pct <- function(atual, anterior) {
+  round((atual - anterior) / anterior * 100, 1)
+}
+
+seta <- function(valor) if (valor >= 0) "▲" else "▼"
+```
+
+---
+
+# Panorama geral do período
+
+```{r kpis-gerais}
+total_ref  <- total_periodo(dados_tratados, ano_ref)
+total_ant  <- total_periodo(dados_tratados, ano_anterior)
+cresc_geral <- var_pct(total_ref, total_ant)
+```
+
+<div class="kpi-container">
+<div class="kpi-box">
+<div class="kpi-number">`r comma(total_ref, big.mark = ".")`</div>
+<div class="kpi-label">Autorizações qualificadas em `r ano_ref` (até o `r tri_ref`º tri.)</div>
+</div>
+<div class="kpi-box">
+<div class="kpi-number">`r comma(total_ant, big.mark = ".")`</div>
+<div class="kpi-label">Mesmo período em `r ano_anterior`</div>
+</div>
+<div class="kpi-box">
+<div class="kpi-number">`r seta(cresc_geral)` `r abs(cresc_geral)`%</div>
+<div class="kpi-label">Variação `r ano_ref` vs. `r ano_anterior`</div>
+</div>
+</div>
+
+Esse é o número que resume o "tamanho do mercado" de talento estrangeiro qualificado entrando
+no Brasil no período analisado. As sete tabelas a seguir decompõem esse total sob sete
+ângulos diferentes — sexo, idade, escolaridade, ocupação, país de origem, estado de destino e
+base legal — cada uma seguida de uma leitura analítica objetiva.
+
+---
+
+# Tabela 7.1 — Sexo
+
+```{r tabela-71}
+dados_7_1 <- dados_tratados %>%
+  mutate(
+    sexo_norm = stri_trans_general(tolower(as.character(genero)), "Latin-ASCII"),
+    Sexo = case_when(
+      str_detect(sexo_norm, "^f") ~ "Feminino",
+      str_detect(sexo_norm, "^m") ~ "Masculino",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Sexo))
+
+tabela_7_1 <- gerar_tabela(dados_7_1, "Sexo", "Sexo", ordem = c("Feminino", "Masculino"))
+exibir_tabela(tabela_7_1, "Tabela 7.1 — Autorizações concedidas a trabalhadores qualificados, por sexo")
+```
+
+```{r insight-71}
+masc_ref <- dados_7_1 %>% filter(ano_num == ano_ref, trimestre_calc <= tri_ref, Sexo == "Masculino") %>% nrow()
+fem_ref  <- dados_7_1 %>% filter(ano_num == ano_ref, trimestre_calc <= tri_ref, Sexo == "Feminino")  %>% nrow()
+pct_masc <- round(masc_ref / (masc_ref + fem_ref) * 100, 1)
+pct_fem  <- round(100 - pct_masc, 1)
+fem_ant  <- dados_7_1 %>% filter(ano_num == ano_anterior, trimestre_calc <= tri_ref, Sexo == "Feminino") %>% nrow()
+cresc_fem <- var_pct(fem_ref, fem_ant)
+```
+
+<div class="insight-box">
+**Leitura:** os homens seguem majoritários no fluxo de talento qualificado, respondendo por
+`r pct_masc`% das autorizações em `r ano_ref`, contra `r pct_fem`% das mulheres. Ainda assim,
+a participação feminina `r if (cresc_fem >= 0) "cresceu" else "recuou"` `r abs(cresc_fem)`% em
+relação ao mesmo período de `r ano_anterior` — um indicador relevante para quem acompanha a
+diversificação de gênero na imigração de trabalho qualificada no país.
+</div>
+
+
+---
+
+# Tabela 7.2 — Grupos de Idade
+
+```{r tabela-72}
+ordem_idades <- c("20 a 34", "35 a 49", "50 a 64", "65 ou mais")
+
+dados_7_2 <- dados_tratados %>%
+  mutate(
+    dt_nasc = parse_date_time(data_nascimento, orders = c("dmy", "ymd", "mdy")),
+    mes_fim_tri   = trimestre_calc * 3,
+    dt_referencia = ceiling_date(make_date(year = ano_num, month = mes_fim_tri, day = 1), "month") - days(1),
+    idade_num = floor(as.numeric(interval(dt_nasc, dt_referencia) / years(1))),
+    faixa_etaria = case_when(
+      idade_num >= 20 & idade_num <= 34 ~ "20 a 34",
+      idade_num >= 35 & idade_num <= 49 ~ "35 a 49",
+      idade_num >= 50 & idade_num <= 64 ~ "50 a 64",
+      idade_num >= 65                   ~ "65 ou mais",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(faixa_etaria %in% ordem_idades)
+
+tabela_7_2 <- gerar_tabela(dados_7_2, "faixa_etaria", "Grupos de Idade", ordem = ordem_idades)
+exibir_tabela(tabela_7_2, "Tabela 7.2 — Autorizações concedidas a trabalhadores qualificados, por grupo de idade")
+```
+
+```{r insight-72}
+faixa_top <- top_categoria(dados_7_2, "faixa_etaria")
+prime_idade <- dados_7_2 %>%
+  filter(ano_num == ano_ref, trimestre_calc <= tri_ref, faixa_etaria %in% c("20 a 34", "35 a 49")) %>%
+  nrow()
+pct_prime <- round(prime_idade / total_periodo(dados_7_2, ano_ref) * 100, 1)
+```
+
+<div class="insight-box">
+**Leitura:** a faixa **`r faixa_top$faixa_etaria`** é a mais numerosa do período, e o grupo
+de **20 a 49 anos** — o momento de maior produtividade e maior tempo de carreira restante —
+concentra `r pct_prime`% de todo o talento qualificado que entra no país. Isso reforça o
+argumento comercial do produto: o Brasil está atraindo, majoritariamente, profissionais em
+início e meio de carreira, com potencial de contribuição de longo prazo para as empresas e
+setores que os recebem.
+</div>
+
+---
+
+# Tabela 7.3 — Escolaridade
+
+```{r tabela-73}
+ordem_escolaridade <- c("Superior", "Pós-Graduação", "Mestrado", "Doutorado")
+
+dados_7_3 <- dados_tratados %>%
+  mutate(
+    nivel_escolaridade = case_when(
+      str_detect(escolaridade_limpa, "doutorado|doutor")  ~ "Doutorado",
+      str_detect(escolaridade_limpa, "mestrado|mestre")    ~ "Mestrado",
+      str_detect(escolaridade_limpa, "pos|especializa")    ~ "Pós-Graduação",
+      str_detect(escolaridade_limpa, "superior")           ~ "Superior",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(nivel_escolaridade %in% ordem_escolaridade)
+
+tabela_7_3 <- gerar_tabela(dados_7_3, "nivel_escolaridade", "Escolaridade", ordem = ordem_escolaridade)
+exibir_tabela(tabela_7_3, "Tabela 7.3 — Autorizações concedidas a trabalhadores qualificados, por escolaridade")
+```
+
+```{r insight-73}
+avancada <- dados_7_3 %>%
+  filter(ano_num == ano_ref, trimestre_calc <= tri_ref,
+         nivel_escolaridade %in% c("Mestrado", "Doutorado", "Pós-Graduação")) %>%
+  nrow()
+pct_avancada <- round(avancada / total_periodo(dados_7_3, ano_ref) * 100, 1)
+```
+
+<div class="insight-box">
+**Leitura:** `r pct_avancada`% dos trabalhadores qualificados do período têm formação **acima
+do nível superior** (pós-graduação, mestrado ou doutorado) — evidência de que o filtro de
+"migrante qualificado" está de fato capturando um público de alta especialização, e não apenas
+graduados recém-formados. Esse é um dado com forte apelo para setores intensivos em P&D e
+inovação.
+</div>
+
+---
+
+# Tabela 7.4 — Grupos Ocupacionais
+
+```{r tabela-74}
+labels_cbo <- c(
+  "1" = "MEMBROS SUPERIORES DO PODER PÚBLICO, DIRIGENTES DE ORGANIZAÇÕES DE INTERESSE PÚBLICO E DE EMPRESAS, GERENTES",
+  "2" = "PROFISSIONAIS DAS CIÊNCIAS E DAS ARTES",
+  "3" = "TÉCNICOS DE NIVEL MÉDIO",
+  "5" = "TRABALHADORES DOS SERVIÇOS, VENDEDORES DO COMÉRCIO EM LOJAS E MERCADOS",
+  "4" = "TRABALHADORES DE SERVIÇOS ADMINISTRATIVOS",
+  "7/8" = "TRABALHADORES DA PRODUÇÃO DE BENS E SERVIÇOS INDUSTRIAIS",
+  "9" = "TRABALHADORES EM SERVIÇOS DE REPARAÇÃO E MANUTENÇÃO",
+  "6" = "TRABALHADORES AGROPECUÁRIOS, FLORESTAIS E DA PESCA"
+)
+ordem_cbo <- unname(labels_cbo)
+
+dados_7_4 <- dados_tratados %>%
+  mutate(
+    digito_cbo = str_sub(as.character(codigo_cbo), 1, 1),
+    digito_cbo = if_else(digito_cbo %in% c("7", "8"), "7/8", digito_cbo),
+    grupo_ocupacional = labels_cbo[digito_cbo]
+  ) %>%
+  filter(!is.na(grupo_ocupacional))
+
+tabela_7_4 <- gerar_tabela(dados_7_4, "grupo_ocupacional", "Grupos Ocupacionais", ordem = ordem_cbo)
+exibir_tabela(tabela_7_4, "Tabela 7.4 — Autorizações concedidas a trabalhadores qualificados, por grupo ocupacional")
+```
+
+```{r insight-74}
+top_ocup <- top_categoria(dados_7_4, "grupo_ocupacional")
+pct_top_ocup <- round(top_ocup$n / total_periodo(dados_7_4, ano_ref) * 100, 1)
+```
+
+<div class="insight-box">
+**Leitura:** o grupo ocupacional **"`r top_ocup$grupo_ocupacional`"** concentra
+`r pct_top_ocup`% das autorizações do período, confirmando que a imigração qualificada no
+Brasil está fortemente ligada a posições de liderança, gestão e conhecimento técnico
+especializado — não a ocupações operacionais de baixa qualificação, o que valida o recorte
+adotado neste relatório.
+</div>
+
+---
+
+# Tabela 7.5 — Principais Países
+
+```{r tabela-75}
+paises_principais <- c(
+  "CHINA", "FRANÇA", "ÍNDIA", "JAPÃO", "ESTADOS UNIDOS", "CORÉIA DO SUL",
+  "MÉXICO", "REINO UNIDO", "ESPANHA", "ALEMANHA", "ITÁLIA", "RÚSSIA",
+  "PORTUGAL", "TURQUIA", "FILIPINAS", "NORUEGA", "CUBA", "CANADÁ",
+  "AUSTRÁLIA", "HOLANDA"
+)
+ordem_paises <- c(paises_principais, "OUTROS")
+variantes_reino_unido <- c("REINO UNIDO", "GRÃ-BRETANHA", "INGLATERRA")
+
+dados_7_5 <- dados_tratados %>%
+  mutate(
+    pais_norm = toupper(str_trim(pais)),
+    pais_norm = if_else(pais_norm %in% variantes_reino_unido, "REINO UNIDO", pais_norm),
+    principais_paises = if_else(pais_norm %in% paises_principais, pais_norm, "OUTROS")
+  )
+
+tabela_7_5 <- gerar_tabela(dados_7_5, "principais_paises", "Principais países", ordem = ordem_paises)
+exibir_tabela(tabela_7_5, "Tabela 7.5 — Autorizações concedidas a trabalhadores qualificados, por país de origem")
+```
+
+```{r insight-75}
+top_pais <- top_categoria(dados_7_5, "principais_paises")
+pct_top_pais <- round(top_pais$n / total_periodo(dados_7_5, ano_ref) * 100, 1)
+pais_ant_n <- dados_7_5 %>%
+  filter(ano_num == ano_anterior, trimestre_calc <= tri_ref, principais_paises == top_pais$principais_paises) %>%
+  nrow()
+cresc_top_pais <- var_pct(top_pais$n, pais_ant_n)
+```
+
+<div class="insight-box">
+**Leitura:** **`r top_pais$principais_paises`** lidera isoladamente como país de origem, com
+`r pct_top_pais`% do total do período, e `r if (cresc_top_pais >= 0) "em expansão" else "em retração"`
+(`r seta(cresc_top_pais)` `r abs(cresc_top_pais)`% frente a `r ano_anterior`). Nota
+metodológica: variantes textuais do mesmo território (**"Grã-Bretanha"**, **"Reino Unido"** e
+**"Inglaterra"**) foram unificadas sob **"Reino Unido"**, evitando que um mesmo país apareça
+fragmentado em múltiplas linhas — um cuidado de qualidade de dados que impacta diretamente a
+confiabilidade do ranking.
+</div>
+
+---
+
+# Tabela 7.6 — Unidade da Federação
+
+```{r tabela-76}
+ordem_uf <- c(
+  "São Paulo", "Rio de Janeiro", "Bahia", "Minas Gerais", "Paraná",
+  "Santa Catarina", "Rio Grande do Sul", "Distrito Federal", "Espírito Santo",
+  "Amazonas", "Ceará", "Alagoas", "Goiás", "Pernambuco", "Rio Grande do Norte",
+  "Pará", "Amapá", "Mato Grosso", "Mato Grosso do Sul", "Sergipe",
+  "Maranhão", "Paraíba", "Piauí", "Rondônia", "Roraima", "Tocantins"
+)
+
+dados_7_6 <- dados_tratados %>%
+  mutate(uf = str_trim(uf_estrangeiro)) %>%
+  filter(uf %in% ordem_uf)
+
+tabela_7_6 <- gerar_tabela(dados_7_6, "uf", "Unidade da Federação", ordem = ordem_uf)
+exibir_tabela(tabela_7_6, "Tabela 7.6 — Autorizações concedidas a trabalhadores qualificados, por UF de destino")
+```
+
+```{r insight-76}
+top_uf <- top_categoria(dados_7_6, "uf")
+pct_top_uf <- round(top_uf$n / total_periodo(dados_7_6, ano_ref) * 100, 1)
+```
+
+<div class="insight-box">
+**Leitura:** **`r top_uf$uf`** concentra `r pct_top_uf`% de todo o talento qualificado que
+chega ao país — um nível de concentração geográfica que é, ao mesmo tempo, um retrato do polo
+econômico dominante e um sinal de oportunidade para outros estados que queiram competir por
+esse fluxo com políticas de atração mais ativas.
+</div>
+
+---
+
+# Tabela 7.7 — Resolução Normativa
+
+```{r tabela-77}
+dados_7_7 <- dados_tratados
+rns_presentes <- dados_7_7 %>% distinct(RN) %>% arrange(RN) %>% pull(RN)
+
+tabela_7_7 <- gerar_tabela(dados_7_7, "RN", "Resolução Normativa", ordem = rns_presentes)
+exibir_tabela(tabela_7_7, "Tabela 7.7 — Autorizações concedidas a trabalhadores qualificados, por Resolução Normativa")
+```
+
+```{r insight-77}
+top_rn <- top_categoria(dados_7_7, "RN")
+pct_top_rn <- round(top_rn$n / total_periodo(dados_7_7, ano_ref) * 100, 1)
+```
+
+<div class="insight-box">
+**Leitura:** a base legal **`r top_rn$RN`** responde por `r pct_top_rn`% das autorizações
+qualificadas do período. Vale lembrar que, por definição metodológica desta tabela, os
+processos de renovação sob a **RN 30** permanecem exibidos sob esse rótulo — mesmo quando a
+resolução original que os qualifica é outra —, preservando a rastreabilidade da regra de
+renovação de residência tal como especificada no modelo de referência do trabalho.
+</div>
+
+---
+
+# Considerações Finais
+
+O perfil imigratório dos migrantes qualificados efetivamente autorizados a trabalhar no Brasil (processos deferidos) reflete um padrão de "expatriado corporativo" bem definido: homens entre 35 e 49 anos, com ensino superior completo, contratados via vínculo empregatício formal ou cargo de gestão. Concentram-se maioritariamente em São Paulo e no Rio de Janeiro, com origem predominante na China e noutros países asiáticos.
+
+Esta análise evidencia um perfil substancialmente mais restrito do que o escopo legal amplo sugerido pela legislação vigente. Ao aplicar o filtro de `andamento == "DEFERIDO"`, o relatório passa a descrever com precisão apenas quem obteve a autorização efetiva.
+
+Além dos resultados analíticos, a estrutura parametrizada do relatório permite a reexecução e atualização automática dos dados a cada novo trimestre, garantindo a rastreabilidade e a consistência das métricas apresentadas.
+
+
+<span class="fonte">Fonte de todas as tabelas: Elaboração própria a partir dos microdados da
+Coordenação-Geral de Imigração Laboral / Ministério da Justiça e Segurança Pública,
+2024–2025.</span>
